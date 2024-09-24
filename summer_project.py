@@ -13,19 +13,30 @@ import os
 import anthropic
 from openai import OpenAI
 
-file = open("sharc1-official/json/sharc_train.json")
+file = open("ConditionalQA/v1_0/dev.json")
 data = json.load(file)
 
-file = open("sharc1-official/json/sharc_test.json")
-test_data = json.load(file)
+file = open("ConditionalQA/v1_0/documents.json")
+docs = json.load(file)
 
-sn = [i["snippet"]for i in data]
-q = [i["answer"] for i in data]
-l = [len(i) for i in sn]
-N = 35
+file = open("ConditionalQA/CondQA_template.txt")
+isrn = file.read()
+# file = open("sharc1-official/json/sharc_test.json")
+# test_data = json.load(file)
 
-sn_test = [i["snippet"] for i in test_data]
-q_test = [i["answer"] for i in test_data]
+urls = [i["url"]for i in data]
+q = [i["answers"] for i in data]
+l = [len(i) for i in urls]
+N = 33
+
+dup = []
+
+for i in range(len(urls)):
+    url = urls[i]
+    if url not in dup:
+        dup.append(url)
+# sn_test = [i["snippet"] for i in test_data]
+# q_test = [i["answer"] for i in test_data]
 
 # sort snippets in decreasing length order
 # z = numpy.array(range(len(q)))
@@ -88,13 +99,25 @@ def select_samples(j, N, z, q, sn):
         i+=1        
     return yes + no + more_info
 
-ind = select_samples(0, N, z, q, sn)
-ind_test = select_samples(0, N, z_test, q_test, sn_test)
-sn = [data[i]["snippet"] for i in ind]
+# ind = select_samples(0, N, z, q, sn)
+# ind_test = select_samples(0, N, z_test, q_test, sn_test)
+def select_answerable(N, data):
+    ind = []
+    j = 0
+    for i in range(len(data)):
+        if data[i]["not_answerable"]:
+            continue
+        ind.append(i)
+        j += 1
+        if j >= N:
+            return ind
+        
+ind = select_answerable(N, data)
+url = [data[i]["url"] for i in ind]
 q = [data[i]["question"] for i in ind]
 sc = [data[i]["scenario"] for i in ind]
-hist = [data[i]["history"] for i in ind]
-
+an = [data[i]["answers"] for i in ind]
+# hist = [data[i]["history"] for i in ind]
 
 
 def llm_util(prompt, s):
@@ -151,16 +174,30 @@ def write_csv(file):
         csvw = csv.writer(csvfile, delimiter=',',
                                 quotechar='"', quoting=csv.QUOTE_MINIMAL)
         for j in range(len(ind)):
-            csvw.writerow([sn[j], sc[j], q[j], data[ind[j]]["answer"], answers[j], tdict[mark[j]]])
+            csvw.writerow([url[j], sc[j], q[j], conditional_answer(j), answers[j]])
         csvw.writerow(["{}/{}".format(total, len(ind))])
 
 def shot(j, ans):
-    messagef = "Snippet: {} \n Scenario: {} \n Conversational history: {} \n Options: -yes, -no, -requires additional information \n Q: {} \n A: {}"
-    h = ""
-    for i in range(len(hist[j])):
-          qs = "When asked, {0} I responded {1}.".format(hist[j][i]['follow_up_question'], hist[j][i]['follow_up_answer'])
-          h= f'{h} {qs}'
-    return messagef.format(sn[j], sc[j], h, q[j], ans)
+    messagef = "Snippet: {} \n Scenario: {} \n Q: {} \n Based on the information in the snippet and scenario, \n {}"
+    return messagef.format(url_get_snippet(url[j]), sc[j], q[j], ans)
+
+def url_get_snippet(url):
+    for doc in docs:
+        if doc['url'] == url:
+            return doc['contents'] 
+    return ""
+
+def conditional_answer(j):
+    answer = ""
+    for i in range(len(an[j])):
+        a = an[j][i]
+        answer = f'{answer} A{i+1}: {a[0]} \n'
+        if len(a[1]) > 0:
+            answer = f'{answer} Conditions: \n'
+        for k in range(len(a[1])):
+            answer = f'{answer} {a[1][k]} \n'
+    return answer
+
 
 tdict = {0 : "Yes", 1 : "No", 2 : "Requires additional information"}
 mark = []
@@ -188,58 +225,86 @@ answers = []
 #     mark.append(interpret_answer(answers[j]))
 
 # 3-shot
-# shoty = shot(0, "Yes")
-# shotn = shot(11, "No")
-# shotm = shot(22, "Requires additional information")
-# print(ind[22], ind[11], ind[0])
 
-ind.pop(70)
-ind.pop(35)
-ind.pop(0)
+def format_longshort(long, short):
+    return f'Long answer: {long} \n Short answer: {short}'
+def format_message(shoty, shotn, shotm):
+    isrn = "In the following text, you will be given three examples of questions and answers and you will provide a fourth answer given a one more question. You will provide a long answer and a short answer with conditions. "
+    return isrn
+long_answerm = """Tax Liability on Foster Care Allowance
+Tax Exemption:
+
+You can receive up to £10,000 per household tax-free from fostering each year. This amount is not subject to income tax.
+Tax Relief:
+
+In addition to the £10,000 tax exemption, you can claim tax relief for each week (or part week) that a child is in your care. The relief rates are:
+Under 11 years old: £200 per child per week
+11 years old or over: £250 per child per week"""
+long_answery = """As a special guardian, you have substantial day-to-day responsibility for your nephew, but there are certain limitations and requirements to be aware of if you plan to take him to live abroad.
+
+Taking Your Nephew Abroad as a Special Guardian
+Consent for Long-Term Travel:
+
+As a special guardian, you need to obtain consent for specific significant decisions, including taking the child abroad for more than 3 months.
+Since you plan to move to Boston for a year, this would exceed the 3-month threshold.
+Obtaining Consent:
+
+You will need to get the consent of everyone who has parental responsibility for your nephew. This might include his birth parents or other legal guardians if applicable.
+If you cannot get this consent, you will need to apply to the court for permission. You would use the form "Make an application in existing court proceedings related to children" (form C2) to request this.
+Court Application:
+
+To ensure everything is legally in order, you should seek a court order to take your nephew abroad. This process involves submitting forms to your local family court and potentially attending hearings to explain your plans and why it is in the best interest of your nephew.
+Local Authority Involvement:
+
+If your nephew is under a care order or involved with children’s services, you might also need to inform the local council and get their agreement."""
+long_answern = """Eligibility for Housing Benefit
+Age Requirement:
+
+You must be over State Pension age or living in supported, sheltered, or temporary housing to be eligible to claim Housing Benefit. Since you are 24, you do not meet the age requirement.
+Housing Benefit Replacement:
+
+Housing Benefit is being replaced by Universal Credit. If you are under State Pension age and do not fit into one of the specific categories that allow new claims for Housing Benefit (like supported, sheltered, or temporary housing), you generally need to claim Universal Credit instead.
+Ineligible Situations:
+
+If you are already claiming Universal Credit, you cannot claim Housing Benefit unless you are in temporary or supported housing.
+As you are renting privately and do not fall into the supported, sheltered, or temporary housing categories, you would not be eligible to claim Housing Benefit.""
+Consent for Long-Term Travel:
+
+As a special guardian, you need to obtain consent for specific significant decisions, including taking the child abroad for more than 3 months.
+Since you plan to move to Boston for a year, this would exceed the 3-month threshold.
+Obtaining Consent:
+
+You will need to get the consent of everyone who has parental responsibility for your nephew. This might include his birth parents or other legal guardians if applicable.
+If you cannot get this consent, you will need to apply to the court for permission. You would use the form “Make an application in existing court proceedings related to children” (form C2) to request this.
+Court Application:
+
+To ensure everything is legally in order, you should seek a court order to take your nephew abroad. This process involves submitting forms to your local family court and potentially attending hearings to explain your plans and why it is in the best interest of your nephew.
+Local Authority Involvement:
+
+If your nephew is under a care order or involved with children’s services, you might also need to inform the local council and get their agreement."""
+shotm = shot(11, format_longshort(long_answerm, conditional_answer(11)))
+shoty = shot(14, format_longshort(long_answery, conditional_answer(14)))
+shotn = shot(18, format_longshort(long_answern, conditional_answer(18)))
+print(ind[18], ind[14], ind[11])
+
+ind.pop(18)
+ind.pop(14)
+ind.pop(11)
 
 for j in range(len(ind)): 
-    h = ""
-    for i in range(len(hist[j])):
-          qs = "When asked, {0} I responded {1}.".format(hist[j][i]['follow_up_question'], hist[j][i]['follow_up_answer'])
-          h= f'{h} {qs}'
+    # h = ""
+    # for i in range(len(hist[j])):
+    #       qs = "When asked, {0} I responded {1}.".format(hist[j][i]['follow_up_question'], hist[j][i]['follow_up_answer'])
+    #       h= f'{h} {qs}'
+    # answer = conditional_answer(j)
     us = shot(j, "")
+    shotpr2 = """ 
     
-    shotpr2 = """ Snippet: The Direct Express® card is a prepaid debit card option for federal benefit recipients to receive their benefits electronically.  With the Direct Express® card, your federal benefit payment is automatically deposited directly into your card account each month on your payment day. This prepaid debit card offers the convenience and security of to spend and access your money rather than using cash for purchases.  Cardholders can make purchases at stores that accept Debit MasterCard®, pay bills, purchase money orders from the U.S. Post Office and get cash from ATMs or financial institutions that display the MasterCard® acceptance mark. No bank account or credit check is required to enroll. There are no sign-up fees or monthly account fees. Many card services are free. Additional information about the Direct Express® card is available at www.USDirectExpress.com. 
-      Scenario:  None
-      Converstional History: When asked, Are you a federal benefit recipient? I responded Yes. 
-      Options:-yes,-no,-requires additional information 
-      Q: Should I apply for this card? 
-      A: Yes, I should apply for this card. Since I am a federal benefit recipient I am able to receive my benefits electronically. Additionally this card offers the convenience and security of to spend and access your money rather than using cash for purchases, and there are no sign-up fees, monthly account fees and many card services are free. 
-
-      Snippet: ## Designated Provider
-
-    To be a designated provider for a qualifying medical marijuana patient, the person must be:
-
-    * Twenty-one years of age or older;
-    * Named on the patient's medical marijuana authorization form.
-    * Have a fully completed form also printed on tamper-resistant paper. The patient signs his or her copy of the authorization form, and the designated provider signs his or her own copy; and
-    * Entered into the medical marijuana database and have a designated provider recognition card, if the patient chooses to be entered into the database. 
-      Scenario: I already filled out all the paperwork.  I made sure I signed everything that needed to be signed. 
-      Conversational History: When asked, Are you age 21 or older? I responded Yes. When asked, Are you named on the patient's medical marijuana form? I responded Yes. When asked, Have you fully completed and printed required forms? I responded Yes. When asked, Has the patient signed his or her copy of the authorization form? I responded Yes. When asked, Has the designated provider signed his or her own copy? I responded No. 
-      Options:-yes,-no,-requires additional information 
-      Q: Can I be a designated provider for this person? 
-      A: No, I can't be a designated provider for this person. The designated provider has not provided his or her own copy. 
-
-      Snippet: In order to be eligible for this program:
-
-    * You must be a U.S. citizen,
-    * You must have a good credit and earnings record, net worth, and liquidity behind the project,
-    * Your project must be fully secured with your assets, including personal guarantees (non-recourse credit is not available), and
-    * You should have at least a three year history of owning or operating the fisheries project which will be the subject of your proposed application, or a three year history owning or operating a comparable project. 
-      Scenario: The project is fully secured with my assets. 
-      Conversational History: When asked, Are you a US citizen? I responded Yes. When asked, Do you have at least 3 years history owning or operating  a fishery or comparable project? I responded Yes. 
-      Options:-yes,-no,-requires additional information
-      Q: Am I eligible for this program? 
-      A: Requires additional information. You must have good credit and earnings record behind the project for you to be eligible for the program. Since you have not confirmed that you have good credit and earnings record, it is uncertain if you are eligible for the program.
         """
     # message = f'{shoty} \n {shotn} \n {shotm} \n {us}'
+    message = isrn.format(shoty, shotn, shotm, us)
     print(j)
-    message = f'{shotpr2} {us}'
+    # message = f'{shotpr2} {us}'
     answer = llm_util(message, 2)
     answers.append(answer)
     mark.append(interpret_answer(answers[j]))
